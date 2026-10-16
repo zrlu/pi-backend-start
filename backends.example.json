@@ -1,0 +1,41 @@
+[
+  {
+    "key": "local-xpu/My-Model-int4",
+    "alias": "my-model",
+    "port": 18001,
+    "served": "My-Model-int4",
+    "cwd": "C:\\LocalLLM\\vllm-xpu",
+    "script": "start-My-Model-int4.ps1",
+    "start": [],
+    "stop": ["-Model", "my-model"],
+    "readySec": 1500,
+    "manual": false,
+    "containers": ["My-Model-int4"],
+    "lane": 18001
+  },
+  {
+    "key": "local-cuda/My-Strata-Model",
+    "alias": "strata",
+    "port": 18501,
+    "served": "my-strata-model",
+    "cwd": "C:\\LocalLLM\\strata-cuda",
+    "script": "strata-flash-next.ps1",
+    "start": ["start"],
+    "stop": ["stop"],
+    "readySec": 300,
+    "manual": false
+  },
+  {
+    "key": "local-remote/Always-On-Model",
+    "alias": "always-on",
+    "port": 0,
+    "served": "",
+    "cwd": "",
+    "script": "",
+    "start": [],
+    "stop": [],
+    "readySec": 0,
+    "manual": false,
+    "alwaysReady": true
+  }
+]

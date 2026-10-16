@@ -1,0 +1,43 @@
+{
+  "name": "pi-backend-start",
+  "version": "0.1.0",
+  "description": "Pi extension that lazily starts, switches and stops local LLM backends (vLLM/XPU Docker, Strata, remote always-on) and shows a readiness light with uptime in the footer.",
+  "keywords": [
+    "pi",
+    "pi-package",
+    "pi-extension",
+    "backend",
+    "model-switcher",
+    "vllm",
+    "docker",
+    "local-llm"
+  ],
+  "license": "MIT",
+  "author": "zrlu",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zrlu/pi-backend-start.git"
+  },
+  "homepage": "https://github.com/zrlu/pi-backend-start#readme",
+  "bugs": {
+    "url": "https://github.com/zrlu/pi-backend-start/issues"
+  },
+  "type": "module",
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "files": [
+    "index.ts",
+    "backends.example.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
