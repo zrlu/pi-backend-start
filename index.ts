@@ -5,6 +5,7 @@ import { mkdirSync, appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { withBackendLane } from './lane-lock';
 export type Spec = {
  key: string; alias: string; port: number; served: string; cwd: string; script: string;
  start: string[]; stop: string[]; readySec: number; manual: boolean;
@@ -64,6 +65,7 @@ export async function runningXpu(): Promise<Spec[]> {
 }
 export async function runningStrata(): Promise<Spec[]> {
  const spec=SPECS.find(s=>s.alias==='strata')!;
+ if(!spec) return [];
  const server=join(spec.cwd,'serve','server.py').replace(/'/g,"''");
  const engine=join(spec.cwd,'engine','strata.exe').replace(/'/g,"''");
  const command=`Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='strata.exe'" | Where-Object { $_.ExecutablePath -eq '${engine}' -or ($_.CommandLine -and $_.CommandLine.Contains('${server}')) } | Select-Object -ExpandProperty ProcessId`;
@@ -77,7 +79,7 @@ export async function runningBackends(): Promise<Spec[]> {
  return [...xpu,...strata];
 }
 
-type Hooks = { ready:typeof isReady; running:typeof runningXpu; launch:typeof launch; started:typeof getBackendStart; pollMs:number };
+type Hooks = { ready:typeof isReady; running:typeof runningXpu; launch:typeof launch; started:typeof getBackendStart; pollMs:number; readyPollMs:number };
 export function backendLight(ready:boolean,running:boolean,starting:boolean):string {
  return ready ? '\u{1F7E2}' : (starting || running) ? '\u{1F7E1}' : '\u26AB';
 }
@@ -139,7 +141,7 @@ async function getBackendStart(spec:Spec):Promise<number|undefined> {
  } catch { return undefined; }
 }
 export function createBackendExtension(pi:ExtensionAPI, overrides:Partial<Hooks>={}) {
- const hooks:Hooks={ready:isReady,running:runningBackends,launch,started:getBackendStart,pollMs:5000,...overrides};
+ const hooks:Hooks={ready:isReady,running:runningBackends,launch,started:getBackendStart,pollMs:5000,readyPollMs:2000,...overrides};
  const pending=new Map<number,Promise<boolean>>();
  const starting=new Set<string>();
  const startTs=new Map<string,number>();
@@ -171,23 +173,34 @@ export function createBackendExtension(pi:ExtensionAPI, overrides:Partial<Hooks>
    return true;
   } finally {selecting=false;}
  }
- async function start(spec:Spec,ctx:ExtensionContext,explicit=false):Promise<boolean> {
+ async function operate(spec:Spec,ctx:ExtensionContext,work:()=>Promise<boolean>):Promise<boolean> {
   const lock=laneLock(spec);
   while(pending.has(lock)) await pending.get(lock);
-  if(explicit && !await select(spec,ctx)) return false;
   starting.add(spec.key);
   void updateLights(ctx);
-  const work=(async()=>{
+  const operation=withBackendLane(lock,work,()=>tell(ctx,`Waiting for another Pi window to finish operating ${spec.alias}...`),Math.max(1800000,spec.readySec*1000+60000))
+   .catch(error=>{tell(ctx,`${spec.alias}: ${error instanceof Error ? error.message : error}`,'error');return false;});
+  pending.set(lock,operation);
+  try {return await operation;} finally {pending.delete(lock);starting.delete(spec.key);await updateLights(ctx);}
+ }
+ async function startLocked(spec:Spec,ctx:ExtensionContext,explicit=false):Promise<boolean> {
    const t0=Date.now();
    if(await hooks.ready(spec)) return true;
+   const active=await hooks.running();
+   const other=active.find(s=>s.key!==spec.key && laneLock(s)===laneLock(spec));
+   if(other && !explicit) {
+    tell(ctx,`${other.alias} is already running or loading on this GPU; automatic startup of ${spec.alias} was skipped. Use /backend start ${spec.alias} to switch explicitly.`,'warning');
+    return false;
+   }
    // A running but warming container must be reused, not recreated.
-   const warming=(await hooks.running()).some(s=>s.key===spec.key);
+   const warming=active.some(s=>s.key===spec.key);
    tell(ctx,`${warming ? 'Waiting for' : 'Starting'} ${spec.alias} :${spec.port}...`);
    if(ctx.hasUI) ctx.ui.setStatus('backend',`starting ${spec.alias} :${spec.port}`);
+   let launcherDone:Promise<number>|undefined;
    try {
     let result:number|undefined;let failure:Error|undefined;let log='Docker container logs';
     if(!warming) {
-     const child=hooks.launch(spec);log=child.log;
+     const child=hooks.launch(spec);log=child.log;launcherDone=child.done;
      child.done.then(code=>{result=code;},error=>{failure=error;});
     }
     const deadline=Date.now()+spec.readySec*1000;
@@ -195,13 +208,20 @@ export function createBackendExtension(pi:ExtensionAPI, overrides:Partial<Hooks>
      if(failure) throw failure;
      if(result!==undefined && result!==0) throw new Error(`Launcher exited ${result}; see ${log}`);
      if(await hooks.ready(spec)) {const el=Date.now()-t0;const s=Math.floor(el/1000);const tag=s<60?`${s}s`:`${Math.floor(s/60)}m${s%60}s`;tell(ctx,`Ready: ${spec.alias} :${spec.port} (${tag})`);return true;}
-     await new Promise(resolve=>setTimeout(resolve,2000));
+     await new Promise(resolve=>setTimeout(resolve,hooks.readyPollMs));
     }
     throw new Error(`Startup timed out; see ${log}`);
    } catch(error) {tell(ctx,`${spec.alias}: ${error instanceof Error ? error.message : error}`,'error');return false;}
-   finally {if(ctx.hasUI) ctx.ui.setStatus('backend',undefined);}
-  })();
-  pending.set(lock,work);try {return await work;} finally {pending.delete(lock);starting.delete(spec.key);await updateLights(ctx);}
+   finally {
+    // The launcher may still be retrying after HTTP readiness/timeout. Keep the
+    // lane locked until it exits so another window cannot interrupt it.
+    if(launcherDone) await launcherDone.catch(()=>{});
+    if(ctx.hasUI) ctx.ui.setStatus('backend',undefined);
+   }
+ }
+ async function start(spec:Spec,ctx:ExtensionContext,explicit=false):Promise<boolean> {
+  if(explicit && !await select(spec,ctx)) return false;
+  return operate(spec,ctx,()=>startLocked(spec,ctx,explicit));
  }
  async function updateLights(ctx:ExtensionContext) {
   if(!ctx.hasUI) return;
@@ -270,15 +290,17 @@ export function createBackendExtension(pi:ExtensionAPI, overrides:Partial<Hooks>
    if(action==='status'){tell(ctx,`${await hooks.ready(spec) ? 'UP' : 'NOT READY'} :${spec.port} ${spec.key}`);return;}
    if(action==='stop') {
     if ((spec as any).alwaysReady) {tell(ctx,`${spec.alias} is always available; nothing to stop.`,'info');return;}
-    const lock=laneLock(spec);while(pending.has(lock)) await pending.get(lock);
-    try {const {done,log}=hooks.launch(spec,true);const code=await done;tell(ctx,code===0 ? `Stopped: ${spec.alias}` : `Stop failed (${code}); see ${log}`,code===0 ? 'info' : 'error');}catch(error){tell(ctx,String(error),'error');}
+    await operate(spec,ctx,async()=>{const {done,log}=hooks.launch(spec,true);const code=await done;tell(ctx,code===0 ? `Stopped: ${spec.alias}` : `Stop failed (${code}); see ${log}`,code===0 ? 'info' : 'error');return code===0;});
     void updateLights(ctx);return;
    }
    if(action==='restart') {
     if ((spec as any).alwaysReady) {tell(ctx,`${spec.alias} is always available; nothing to restart.`,'info');return;}
-    const lock=laneLock(spec);while(pending.has(lock)) await pending.get(lock);
-    try {const {done,log}=hooks.launch(spec,true);const code=await done;if(code!==0) tell(ctx,`Stop returned ${code}; continuing restart`, 'warning');}catch(error){tell(ctx,`Stop failed: ${String(error)}`,'error');}
-      if(await start(spec,ctx,true)) await select(spec,ctx);
+    if(!await select(spec,ctx)) return;
+    await operate(spec,ctx,async()=>{
+     const {done,log}=hooks.launch(spec,true);const code=await done;
+     if(code!==0) {tell(ctx,`Stop failed (${code}); see ${log}`,'error');return false;}
+     return startLocked(spec,ctx,true);
+    });
     void updateLights(ctx);
     return;
    }

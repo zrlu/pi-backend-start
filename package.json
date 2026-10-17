@@ -30,6 +30,7 @@
   },
   "files": [
     "index.ts",
+    "lane-lock.ts",
     "backends.example.json",
     "README.md",
     "LICENSE"

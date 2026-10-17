@@ -11,6 +11,14 @@ profiles, stops them, and paints a readiness light into the footer.
   if it is not already ready (lazy start), then selects that model.
 - Detects already-running Docker containers and reuses them instead of
   recreating a warm one.
+- Serializes start/stop/restart across Pi windows with an OS-owned lane lock.
+  A second window waits, then re-checks readiness and running containers before
+  doing anything. The lock remains held until the launcher exits, even if HTTP
+  readiness appears earlier. On Windows the lock is a named pipe and disappears
+  automatically when its owner exits.
+- Automatic startup never replaces a different running/loading profile on the
+  same lane. Use `/backend start <alias>` to switch explicitly. All windows must
+  reload the extension to adopt this behavior.
 - Polls each backend's `/v1/models` for readiness. Only a successful check turns
   the light green, so a loading container stays amber.
 - Reports status through `ctx.ui.setStatus("backend", ...)` as
@@ -55,7 +63,7 @@ Backends are declared in `backends.json` (not committed). Copy
 | `readySec` | Startup timeout in seconds. |
 | `alwaysReady` | `true` for an always-on backend (no launcher). |
 | `containers` | Docker container names for liveness detection (XPU profiles). |
-| `lane` | Optional lock lane so two XPU profiles never start concurrently. |
+| `lane` | Shared resource/lock identity for XPU profiles. All XPU profiles default to lane 18001, even when their HTTP ports differ. |
 
 `backends.json` is resolved in this order:
 
@@ -75,6 +83,14 @@ pi install git:github.com/zrlu/pi-backend-start
 Or copy this directory into `~/.pi/agent/extensions/pi-backend-start/`.
 
 ## Notes
+
+Cross-process regression tests (no real GPU/backend is started or stopped):
+
+```bash
+node --test tests/cross-window.test.cjs
+```
+
+The tests use Jiti from the local managed Pi installation.
 
 This extension is Windows-oriented: it launches launcher scripts through `pwsh`
 and inspects Docker through the `docker` CLI. Porting the launch/inspect paths
