@@ -99,8 +99,16 @@ function displayWidth(text:string):number {
 // Render the readiness light plus as much uptime as the footer slot width allows:
 // full "uptime: 2m", short "up:2m", compact "2m", or the light alone. Unknown width
 // shows the full form so the footer can measure and reserve room for it.
-export function backendStatus(dot:string, uptime?:string, width?:number):string {
-	if(!uptime) return dot;
+export function backendStatus(dot:string, uptime?:string, width?:number, waiting?:boolean):string {
+	if(!uptime) {
+		if(waiting) {
+			const full=`${dot} waiting`;
+			if(width===undefined) return full;
+			if(width>=displayWidth(full)) return full;
+			return dot;
+		}
+		return dot;
+	}
 	const full=`${dot} uptime: ${uptime}`;
 	const short=`${dot} up:${uptime}`;
 	const compact=`${dot} ${uptime}`;
@@ -244,7 +252,8 @@ export function createBackendExtension(pi:ExtensionAPI, overrides:Partial<Hooks>
    }
    uptime=fmtUptime(Date.now()-startTs.get(spec.key)!);
   } else { startTs.delete(spec.key); }
-  ctx.ui.setStatus('backend',backendStatus(dot,uptime,slotWidths.get('backend')));
+  const isWaiting=!ready&&(running||starting.has(spec.key));
+  ctx.ui.setStatus('backend',backendStatus(dot,uptime,slotWidths.get('backend'),isWaiting));
  }
  const auto=async(ctx:ExtensionContext)=>{
   const spec=current(ctx);
